@@ -1,0 +1,36 @@
+@import "tailwindcss";
+
+:root {
+  --safe-top: env(safe-area-inset-top);
+  --safe-bottom: env(safe-area-inset-bottom);
+}
+
+html {
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  background-color: #fff7ed;
+  overscroll-behavior-y: none;
+}
+
+/* Mobile-first: bottom navigation */
+.bottom-nav {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* Smooth scrolling for meal lists */
+.meal-scroll {
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Tap targets minimum 44px on mobile */
+button, a {
+  min-height: 44px;
+}
+
+@media (min-width: 768px) {
+  button, a {
+    min-height: auto;
+  }
+}

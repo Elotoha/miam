@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "miam",
+  "main": "./workers/app.ts",
+  "compatibility_date": "2026-11-16",
+  "observability": {
+    "enabled": true
+  },
+  "upload_source_maps": true,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "miam-db",
+      "database_id": "YOUR_D1_DATABASE_ID"
+    }
+  ]
+}
