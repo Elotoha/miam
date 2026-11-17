@@ -1,0 +1,9 @@
+import { NavLink, Form, useNavigation } from 'react-router';
+import type { ReactNode } from 'react';
+export function Shell({title,subtitle,children,action}:{title:string;subtitle?:string;children:ReactNode;action?:ReactNode}){
+ const navigation=useNavigation();
+ return <div className="app-shell"><aside className="desktop-brand"><a href="/dashboard" className="brand">miam<span>·</span></a><p>Le plaisir de manger,<br/>un peu plus sereinement.</p><Navigation/><Form method="post" action="/logout"><button className="text-button">Se déconnecter</button></Form></aside><main id="main" className="main" aria-busy={navigation.state!=="idle"}>{navigation.state!=="idle"&&<p className="busy" role="status">Traitement en cours…</p>}<header className="page-head"><div><a className="mobile-brand" href="/dashboard">miam<span>·</span></a><p className="eyebrow">VOTRE ÉQUILIBRE, À VOTRE RYTHME</p><h1>{title}</h1>{subtitle&&<p className="subtitle">{subtitle}</p>}</div>{action}</header>{children}<footer className="footnote">Estimations indicatives · Vos repères se personnalisent dans Profil.<a href="/guide">Comprendre les données</a></footer></main><nav className="mobile-nav" aria-label="Navigation principale"><Navigation/></nav></div>;
+}
+function Navigation(){return <div className="nav-items">{[['/dashboard','◷','Ma journée'],['/log','＋','Composer'],['/foods','◉','Aliments'],['/program','▤','Programme'],['/settings','♙','Profil']].map(([url,icon,label])=><NavLink key={url} to={url} className={({isActive})=>isActive?'nav-link active':'nav-link'}><span aria-hidden="true">{icon}</span><span>{label}</span></NavLink>)}</div>}
+export function Empty({title,children}:{title:string;children?:ReactNode}){return <div className="empty"><span aria-hidden="true">◌</span><h3>{title}</h3>{children}</div>}
+export function Alert({children}:{children:ReactNode}){return <p className="alert" role="alert">{children}</p>}

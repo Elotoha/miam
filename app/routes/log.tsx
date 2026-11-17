@@ -1,335 +1,92 @@
-import { redirect } from "react-router";
-import type { Route } from "./+types/log";
-import { getUserFromRequest } from "~/lib/auth";
-import { getAllFoods, logMeal, getMealLogsForDate, getMealPlansForDate, getTotalPointsForDate, getUserById } from "~/lib/db";
-import { parsePortionInput, extractFoodName } from "~/lib/portion-estimator";
-import { calculateWwPoints, type FoodMacros } from "~/lib/ww-points";
-import { generateSuggestions, type LoggedMeal, type PlannedMeal } from "~/lib/smart-adjustments";
-
-export async function loader({ context }: Route.LoaderArgs) {
-  const db = context.cloudflare.env.DB;
-  const user = await getUserFromRequest(db, new Request("http://localhost"));
-  if (!user) throw redirect("/login");
-
-  const foods = await getAllFoods(db);
-  return { foods };
+import { Form, useActionData, useLoaderData, redirect } from 'react-router';
+import type { Route } from './+types/log';
+import { session,catalog,profile,meal,positive,itemStatement,validDate,parse } from '~/lib/workspace';
+import { localDate,mealTypes,total,mealPoints,number } from '~/lib/nutrition';
+import { interpret } from '~/lib/assistant';
+import { evaluate, type Program } from '~/lib/program';
+import { Shell,Empty,Alert } from '~/components/layout';
+import { Nutrition,MealLines,Advice } from '~/components/nutrition';
+import { useState } from 'react';
+export async function loader({request,context}:Route.LoaderArgs){
+ const {db,user}=await session(request,context),url=new URL(request.url),id=url.searchParams.get('meal');
+ const [foods,p,m,programs]=await Promise.all([catalog(db,user.id),profile(db,user.id),id?meal(db,user.id,id):null,db.prepare('SELECT * FROM meal_programs WHERE user_id=?').bind(user.id).all<any>()]);
+ return {foods,profile:p,meal:m,programs:programs.results.map(p=>({...p,tree:parse(p.tree_json,null)})) as Program[],date:url.searchParams.get('date')||localDate(),type:url.searchParams.get('meal_type')||'dejeuner'};
 }
-
-export async function action({ request, context }: Route.ActionArgs) {
-  const db = context.cloudflare.env.DB;
-  const user = await getUserFromRequest(db, request);
-  if (!user) throw redirect("/login");
-
-  const formData = await request.formData();
-  const mode = formData.get("mode") as string; // "search" | "free-text" | "quick"
-  const today = new Date().toISOString().split("T")[0];
-
-  let foodId: number;
-  let portionDesc: string;
-  let qtyG: number;
-  let wwPoints: number;
-
-  if (mode === "free-text") {
-    // Saisie libre en langage naturel
-    const freeText = formData.get("free_text") as string;
-    const mealType = formData.get("meal_type") as string;
-    const foods = await getAllFoods(db);
-    const foodNames = foods.map((f) => f.name);
-
-    // Trouver l'aliment dans le texte
-    const matchedName = extractFoodName(freeText, foodNames);
-    if (!matchedName) {
-      return { error: "Aliment non reconnu dans votre saisie. Essayez la recherche par nom." };
-    }
-
-    const food = foods.find((f) => f.name === matchedName)!;
-    foodId = food.id;
-
-    // Estimer la portion
-    const parsed = parsePortionInput(freeText);
-    portionDesc = `${parsed.quantity} × ${parsed.portionLabel}`;
-    qtyG = parsed.weight_g;
-    wwPoints = calculateWwPoints(food as unknown as FoodMacros, qtyG);
-
-    await logMeal(db, user.id, {
-      date: today,
-      meal_type: mealType,
-      food_id: foodId,
-      portion_desc: portionDesc,
-      qty_g: qtyG,
-      ww_points: wwPoints,
-      note: freeText,
-    });
-  } else if (mode === "quick") {
-    // Saisie rapide : aliment sélectionné + portion qualitative
-    foodId = parseInt(formData.get("food_id") as string, 10);
-    const portionLabel = formData.get("portion_label") as string;
-    const quantity = parseInt(formData.get("quantity") as string, 10) || 1;
-    const mealType = formData.get("meal_type") as string;
-
-    const foods = await getAllFoods(db);
-    const food = foods.find((f) => f.id === foodId);
-    if (!food) return { error: "Aliment introuvable" };
-
-    // Mapper le label de portion à un poids
-    const portionWeights: Record<string, number> = {
-      "petite part": 120,
-      "part standard": 250,
-      "grosse part": 400,
-      "très grosse part": 600,
-    };
-    qtyG = (portionWeights[portionLabel] ?? food.default_portion_g) * quantity;
-    portionDesc = `${quantity} × ${portionLabel}`;
-    wwPoints = calculateWwPoints(food as unknown as FoodMacros, qtyG);
-
-    await logMeal(db, user.id, {
-      date: today,
-      meal_type: mealType,
-      food_id: foodId,
-      portion_desc: portionDesc,
-      qty_g: qtyG,
-      ww_points: wwPoints,
-    });
-  } else {
-    // Recherche par nom + quantité en grammes
-    foodId = parseInt(formData.get("food_id") as string, 10);
-    qtyG = parseInt(formData.get("qty_g") as string, 10);
-    const mealType = formData.get("meal_type") as string;
-
-    const foods = await getAllFoods(db);
-    const food = foods.find((f) => f.id === foodId);
-    if (!food) return { error: "Aliment introuvable" };
-
-    portionDesc = `${qtyG}g`;
-    wwPoints = calculateWwPoints(food as unknown as FoodMacros, qtyG);
-
-    await logMeal(db, user.id, {
-      date: today,
-      meal_type: mealType,
-      food_id: foodId,
-      portion_desc: portionDesc,
-      qty_g: qtyG,
-      ww_points: wwPoints,
-    });
-  }
-
-  // Générer les suggestions après la saisie
-  const [logs, plans, consumed, userInfo] = await Promise.all([
-    getMealLogsForDate(db, user.id, today),
-    getMealPlansForDate(db, user.id, today),
-    getTotalPointsForDate(db, user.id, today),
-    getUserById(db, user.id),
-  ]);
-
-  const target = userInfo?.daily_points_target ?? user.daily_points_target;
-  const loggedMeals: LoggedMeal[] = logs.map((l) => ({
-    food_id: l.food_id,
-    food_name: l.food_name,
-    category: l.category,
-    ww_points: l.ww_points,
-    qty_g: l.qty_g,
-    meal_type: l.meal_type,
-  }));
-  const plannedMeals: PlannedMeal[] = plans.map((p) => ({
-    id: p.id,
-    food_id: p.food_id,
-    food_name: p.food_name,
-    category: p.category,
-    meal_type: p.meal_type,
-    planned_qty_g: p.planned_qty_g,
-    estimated_ww_points: p.estimated_ww_points,
-  }));
-
-  const suggestions = generateSuggestions(loggedMeals, plannedMeals, target, consumed);
-
-  return { success: true, suggestions, wwPoints, qtyG, portionDesc };
+export async function action({request,context}:Route.ActionArgs){
+ const {db,user,env}=await session(request,context),form=await request.formData(),intent=String(form.get('intent')||''),id=String(form.get('meal_id')||'');
+ try{
+ if(intent==='create'){
+  const date=String(form.get('date')),type=String(form.get('meal_type'));
+  if(!validDate(date)||!mealTypes[type])throw new Error('Date ou type de repas invalide.');
+  const key=crypto.randomUUID();
+  await db.prepare('INSERT INTO meals(id,user_id,date,meal_type,status,title) VALUES (?,?,?,?,?,?)').bind(key,user.id,date,type,'draft',mealTypes[type]).run();
+  return redirect('/log?meal='+key);
+ }
+ const m=await meal(db,user.id,id);
+ if(intent==='estimate'){
+  const text=String(form.get('description')||''); if(text.length<2||text.length>2000)throw new Error('Décrivez votre repas en 2 à 2 000 caractères.');
+  const count=await db.prepare(`INSERT INTO ai_usage(user_id,date,count) VALUES (?,?,1) ON CONFLICT(user_id,date) DO UPDATE SET count=count+1 WHERE count<20 RETURNING count`).bind(user.id,localDate()).first();
+  if(!count)throw new Error('La limite de 20 estimations par jour est atteinte. Vous pouvez continuer avec la saisie manuelle.');
+  const foods=await catalog(db,user.id);return {estimate:await interpret(text,foods,env.AI),error:null};
+ }
+ if(intent==='confirm'){
+  const foods=await catalog(db,user.id),raw=parse<any>(String(form.get('proposals')||''),null);
+  if(!Array.isArray(raw)||raw.length<1||raw.length>20)throw new Error('Proposition invalide.');
+  const statements=raw.filter((r:any)=>r.include!==false).map((r:any)=>{
+   const f=foods.find(f=>f.id===r.foodId);if(!f)throw new Error('Aliment indisponible.');
+   return itemStatement(db,id,f,positive(r.grams,5000),r.estimated!==false,String(r.description||'').slice(0,200));
+  });
+  if(!statements.length)throw new Error('Sélectionnez au moins un aliment.');
+  await db.batch(statements);
+ }else if(intent==='add'){
+  const f=(await catalog(db,user.id)).find(f=>f.id===form.get('food_id'));if(!f)throw new Error('Choisissez un aliment du catalogue.');
+  await itemStatement(db,id,f,positive(form.get('grams'),5000),form.get('estimated')==='on',String(form.get('note')||'').slice(0,200)).run();
+ }else if(intent==='update-item'){
+  if(!m.items.some(i=>i.id===form.get('item_id')))throw new Response('Ligne introuvable',{status:404});
+  await db.prepare('UPDATE meal_items SET grams=? WHERE id=? AND meal_id=?').bind(positive(form.get('grams'),5000),String(form.get('item_id')),id).run();
+ }else if(intent==='remove'){
+  await db.prepare('DELETE FROM meal_items WHERE id=? AND meal_id=?').bind(String(form.get('item_id')),id).run();
+ }else if(intent==='status'){
+  const status=String(form.get('status'));if(!['draft','planned','consumed'].includes(status))throw new Error('Statut invalide.');
+  if(status!=='draft'&&!m.items.length)throw new Error('Ajoutez au moins un aliment à ce repas.');
+  await db.prepare('UPDATE meals SET status=? WHERE id=? AND user_id=?').bind(status,id,user.id).run();
+ }else if(intent==='details'){
+  const date=String(form.get('date')),type=String(form.get('meal_type')),title=String(form.get('title')).trim();
+  if(!validDate(date)||!mealTypes[type]||!title||title.length>100)throw new Error('Vérifiez le titre, la date et le repas.');
+  await db.prepare('UPDATE meals SET date=?,meal_type=?,title=? WHERE id=? AND user_id=?').bind(date,type,title,id,user.id).run();
+ }else if(intent==='delete'){
+  await db.prepare('DELETE FROM meals WHERE id=? AND user_id=?').bind(id,user.id).run(); return redirect('/dashboard?date='+m.date);
+ }else if(intent==='copy'){
+  const date=String(form.get('date'));if(!validDate(date))throw new Error('Date invalide.');const key=crypto.randomUUID();
+  await db.batch([db.prepare('INSERT INTO meals(id,user_id,date,meal_type,status,title) VALUES (?,?,?,?,?,?)').bind(key,user.id,date,m.meal_type,'planned',m.title),...m.items.map(i=>db.prepare('INSERT INTO meal_items(id,meal_id,food_id,name,grams,nutrients,source,gluten,lactose,estimated,note) VALUES(?,?,?,?,?,?,?,?,?,?,?)').bind(crypto.randomUUID(),key,i.food_id,i.name,i.grams,JSON.stringify(i.nutrients),i.source,i.gluten,i.lactose,i.estimated,i.note))]);return redirect('/log?meal='+key);
+ }else throw new Error('Action inconnue.');
+ return redirect('/log?meal='+id);
+ }catch(e){if(e instanceof Response)throw e;return {error:e instanceof Error?e.message:'Une erreur est survenue.',estimate:null};}
 }
-
-export default function Log({ loaderData, actionData }: Route.ComponentProps) {
-  const { foods } = loaderData;
-
-  return (
-    <div className="min-h-screen bg-orange-50 pb-24">
-      <header className="bg-orange-500 text-white px-4 pt-3 pb-4" style={{ paddingTop: "calc(env(safe-area-inset-top) + 0.75rem)" }}>
-        <h1 className="text-xl font-bold">➕ Saisir un repas</h1>
-      </header>
-
-      <div className="px-4 mt-4 space-y-4">
-        {actionData?.success && (
-          <div className="bg-green-50 border border-green-200 rounded-2xl p-4">
-            <p className="font-semibold text-green-700">Repas enregistré ! ✅</p>
-            <p className="text-sm text-gray-600 mt-1">
-              {actionData.portionDesc} → {actionData.wwPoints} points
-            </p>
-          </div>
-        )}
-
-        {/* Saisie libre en langage naturel */}
-        <div className="bg-white rounded-2xl shadow-sm p-4">
-          <h2 className="font-semibold text-gray-800 mb-3">💬 Saisie libre</h2>
-          <p className="text-xs text-gray-400 mb-3">
-            Décrivez ce que vous avez mangé sans peser. Ex : « 2 grosses parts de lasagnes »
-          </p>
-          <form method="post" className="space-y-3">
-            <input type="hidden" name="mode" value="free-text" />
-            <select name="meal_type" className="w-full rounded-xl border border-gray-300 px-3 py-2.5 text-sm">
-              <option value="petit-dejeuner">Petit-déjeuner</option>
-              <option value="collation-matin">Collation matin</option>
-              <option value="dejeuner" selected>Déjeuner</option>
-              <option value="collation-aprem">Collation après-midi</option>
-              <option value="diner">Dîner</option>
-            </select>
-            <textarea
-              name="free_text"
-              rows={3}
-              className="w-full rounded-xl border border-gray-300 px-3 py-2.5 focus:border-orange-500 outline-none resize-none"
-              placeholder="Ex : j'ai pris 2 grosses parts de lasagnes et un petit bol de riz"
-            />
-            <button
-              type="submit"
-              className="w-full rounded-xl bg-orange-500 py-3 text-white font-medium hover:bg-orange-600 active:scale-95 transition"
-            >
-              Enregistrer
-            </button>
-          </form>
-          {actionData?.error && mode === "free-text" && (
-            <p className="text-sm text-red-500 mt-2">{actionData.error}</p>
-          )}
-        </div>
-
-        {/* Saisie rapide par aliment */}
-        <div className="bg-white rounded-2xl shadow-sm p-4">
-          <h2 className="font-semibold text-gray-800 mb-3">🍎 Saisie rapide</h2>
-          <form method="post" className="space-y-3">
-            <input type="hidden" name="mode" value="quick" />
-            <select name="meal_type" className="w-full rounded-xl border border-gray-300 px-3 py-2.5 text-sm">
-              <option value="petit-dejeuner">Petit-déjeuner</option>
-              <option value="collation-matin">Collation matin</option>
-              <option value="dejeuner" selected>Déjeuner</option>
-              <option value="collation-aprem">Collation après-midi</option>
-              <option value="diner">Dîner</option>
-            </select>
-            <select name="food_id" className="w-full rounded-xl border border-gray-300 px-3 py-2.5 text-sm">
-              {foods.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.name} ({f.category})
-                </option>
-              ))}
-            </select>
-            <div className="flex gap-2">
-              <select name="portion_label" className="flex-1 rounded-xl border border-gray-300 px-3 py-2.5 text-sm">
-                <option value="petite part">Petite part (~120g)</option>
-                <option value="part standard" selected>Part standard (~250g)</option>
-                <option value="grosse part">Grosse part (~400g)</option>
-                <option value="très grosse part">Très grosse part (~600g)</option>
-              </select>
-              <input
-                type="number"
-                name="quantity"
-                defaultValue={1}
-                min={1}
-                max={10}
-                className="w-20 rounded-xl border border-gray-300 px-3 py-2.5 text-sm text-center"
-              />
-            </div>
-            <button
-              type="submit"
-              className="w-full rounded-xl bg-orange-500 py-3 text-white font-medium hover:bg-orange-600 active:scale-95 transition"
-            >
-              Enregistrer
-            </button>
-          </form>
-        </div>
-
-        {/* Saisie précise en grammes */}
-        <details className="bg-white rounded-2xl shadow-sm p-4">
-          <summary className="font-semibold text-gray-800 cursor-pointer">⚖️ Saisie précise (en grammes)</summary>
-          <form method="post" className="space-y-3 mt-3">
-            <input type="hidden" name="mode" value="search" />
-            <select name="meal_type" className="w-full rounded-xl border border-gray-300 px-3 py-2.5 text-sm">
-              <option value="petit-dejeuner">Petit-déjeuner</option>
-              <option value="collation-matin">Collation matin</option>
-              <option value="dejeuner" selected>Déjeuner</option>
-              <option value="collation-aprem">Collation après-midi</option>
-              <option value="diner">Dîner</option>
-            </select>
-            <select name="food_id" className="w-full rounded-xl border border-gray-300 px-3 py-2.5 text-sm">
-              {foods.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.name} ({f.category})
-                </option>
-              ))}
-            </select>
-            <input
-              type="number"
-              name="qty_g"
-              defaultValue={250}
-              min={1}
-              className="w-full rounded-xl border border-gray-300 px-3 py-2.5 text-sm"
-              placeholder="Quantité en grammes"
-            />
-            <button
-              type="submit"
-              className="w-full rounded-xl bg-gray-700 py-3 text-white font-medium hover:bg-gray-800 active:scale-95 transition"
-            >
-              Enregistrer
-            </button>
-          </form>
-        </details>
-
-        {/* Suggestions d'ajustement */}
-        {actionData?.suggestions && actionData.suggestions.length > 0 && (
-          <div className="space-y-3">
-            <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide">Ajustements suggérés</h2>
-            {actionData.suggestions.map((s: any, i: number) => (
-              <div
-                key={i}
-                className={`rounded-2xl p-4 ${
-                  s.type === "warning"
-                    ? "bg-red-50 border border-red-200"
-                    : s.type === "swap" || s.type === "reduce"
-                      ? "bg-amber-50 border border-amber-200"
-                      : "bg-green-50 border border-green-200"
-                }`}
-              >
-                <h3 className="font-semibold text-gray-800 text-sm mb-1">{s.title}</h3>
-                <p className="text-sm text-gray-600">{s.message}</p>
-                {s.action && (
-                  <a href="/plan" className="inline-block mt-2 text-xs font-medium text-orange-600 hover:underline">
-                    Ajuster le plan →
-                  </a>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Bottom nav */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 bottom-nav">
-        <div className="flex justify-around items-center h-16 max-w-md mx-auto">
-          <a href="/dashboard" className="flex flex-col items-center text-gray-400">
-            <span className="text-xl">🏠</span>
-            <span className="text-[10px]">Accueil</span>
-          </a>
-          <a href="/log" className="flex flex-col items-center text-orange-600">
-            <span className="text-xl">➕</span>
-            <span className="text-[10px]">Saisir</span>
-          </a>
-          <a href="/foods" className="flex flex-col items-center text-gray-400">
-            <span className="text-xl">🍎</span>
-            <span className="text-[10px]">Aliments</span>
-          </a>
-          <a href="/plan" className="flex flex-col items-center text-gray-400">
-            <span className="text-xl">📅</span>
-            <span className="text-[10px]">Plan</span>
-          </a>
-          <a href="/settings" className="flex flex-col items-center text-gray-400">
-            <span className="text-xl">⚙️</span>
-            <span className="text-[10px]">Réglages</span>
-          </a>
-        </div>
-      </nav>
-    </div>
-  );
+export default function Composer(){
+ const {foods,profile,meal:m,programs,date,type}=useLoaderData<typeof loader>(),result=useActionData<typeof action>();
+ const [tab,setTab]=useState<'describe'|'manual'>('describe'),[query,setQuery]=useState(''),[detail,setDetail]=useState(false);
+ const program=m&&profile.program_enabled?programs.find(p=>p.meal_type===m.meal_type):null;
+ const sums=m?total(m.items):null;
+ const check=program&&m?evaluate(program.tree,m.items,foods):null;
+ const hidden=m?<input type="hidden" name="meal_id" value={m.id}/>:null;
+ return <Shell title={m?m.title:'Composons votre repas'} subtitle={m?`${mealTypes[m.meal_type]} · ${m.date.split('-').reverse().join('/')} · ${{draft:'En composition',planned:'Planifié',consumed:'Réalisé'}[m.status]}`:'Un seul repas, tous ses aliments et une vue d’ensemble.'}>
+ {result?.error&&<Alert>{result.error}</Alert>}
+ {!m?<section className="card start-meal"><p className="eyebrow">NOUVEAU REPAS</p><Form method="post" className="stack"><input type="hidden" name="intent" value="create"/><label>Quel jour ?<input type="date" name="date" defaultValue={date} required/></label><label>Quel repas ?<select name="meal_type" defaultValue={type}>{Object.entries(mealTypes).slice(0,4).map(([k,l])=><option value={k} key={k}>{l}</option>)}</select></label><button className="primary">Composer ce repas →</button><a className="text-button" href="/plan">Ou laissez-vous proposer un repas</a></Form></section>:<>
+ <div className="status-strip" aria-label="État du repas">{(['draft','planned','consumed'] as const).map((s,i)=><Form method="post" key={s}>{hidden}<input type="hidden" name="intent" value="status"/><input type="hidden" name="status" value={s}/><button className={m.status===s?'status active':'status'} aria-pressed={m.status===s}><span>{i+1}</span>{['Composer','Planifié','Réalisé'][i]}</button></Form>)}</div>
+ <div className="meal-quick"><span>{sums?.coverage.energy!==sums?.count&&sums?.values.energy!==undefined?"≥ ":""}{number(sums?.values.energy,0)} kcal connues · ≈ {sums?mealPoints(sums)??"—":"—"} pts</span><a href="#meal-nutrition">Voir le bilan ↓</a></div><div className="workspace-grid"><div className="stack"><section className="card"><div className="section-title"><h2>Votre repas</h2><span className="tag">{m.items.length} aliment{m.items.length>1?'s':''}</span></div>{m.items.length?<MealLines items={m.items} profile={profile}>{i=><Form method="post" className="inline-form">{hidden}<input type="hidden" name="item_id" value={i.id}/><label>Quantité (g)<input name="grams" type="number" min="1" max="5000" step="0.1" defaultValue={i.grams}/></label><button name="intent" value="update-item" className="secondary">Modifier</button><button name="intent" value="remove" className="danger">Retirer</button></Form>}</MealLines>:<Empty title="Le repas est encore vide"><p>Ajoutez un ou plusieurs aliments ci-dessous. Ils apparaîtront ici avant de marquer le repas comme réalisé.</p></Empty>}</section>
+ <section className="card"><p className="eyebrow">AJOUTER AU REPAS CI-DESSUS</p><h2>Qu’allez-vous manger ?</h2><div className="tabs"><button className={tab==='describe'?'active':''} onClick={()=>setTab('describe')}>Décrire le repas</button><button className={tab==='manual'?'active':''} onClick={()=>setTab('manual')}>Choisir et peser</button></div>
+ {tab==='describe'?<Form method="post" className="stack">{hidden}<input type="hidden" name="intent" value="estimate"/><label>Décrivez tous les aliments, même sans balance<textarea name="description" rows={4} maxLength={2000} required placeholder="Quelques cacahuètes, un bol de soupe, une grosse part de lasagnes et un yaourt nature…"/></label><p className="fine">L’IA propose des poids. Vous les vérifiez avant d’ajouter les aliments. Aucun nutriment n’est inventé par l’IA.</p><button className="primary">Estimer les portions ✧</button></Form>:<Form method="post" className="stack">{hidden}<input type="hidden" name="intent" value="add"/><label>Rechercher<input type="search" value={query} onChange={e=>setQuery(e.target.value)} placeholder="Nom de l’aliment"/></label><label>Aliment<select name="food_id" required>{foods.filter(f=>f.name.toLowerCase().includes(query.toLowerCase())).map(f=><option key={f.id} value={f.id}>{f.name} · portion usuelle {f.portion} g</option>)}</select></label><div className="two-cols"><label>Quantité (g)<input type="number" name="grams" min="1" max="5000" step="0.1" defaultValue="100" required/></label><label>Description facultative<input name="note" placeholder="Une grosse part…" maxLength={200}/></label></div><label className="check"><input type="checkbox" name="estimated"/>Poids estimé, sans balance</label><button className="primary">Ajouter cet aliment au repas</button></Form>}
+ {result?.estimate&&<ProposalReview key={JSON.stringify(result.estimate)} estimate={result.estimate} foods={foods} mealId={m.id}/>}
+ </section><Advice items={m.items} profile={profile}/>
+ {check&&<section className="card"><p className="eyebrow">VOTRE PROGRAMME</p><h3>{check.ok?'Les choix et quantités du programme sont couverts':'À comparer au programme'}</h3>{check.messages.map((msg,i)=><p className="fine" key={i}>{msg}</p>)}<p className="fine">Les ajouts restent possibles, même hors programme. La correspondance utilise une tolérance de portion de ±10 % et ne remplace pas l’avis de votre diététicienne.</p><a href="/program">Voir les options</a></section>}
+ <details className="card"><summary>Organiser ce repas</summary><Form method="post" className="stack">{hidden}<input type="hidden" name="intent" value="details"/><label>Titre<input name="title" defaultValue={m.title} maxLength={100} required/></label><label>Date<input type="date" name="date" defaultValue={m.date} required/></label><label>Type<select name="meal_type" defaultValue={m.meal_type}>{Object.entries(mealTypes).map(([k,l])=><option key={k} value={k}>{l}</option>)}</select></label><button className="secondary">Enregistrer les détails</button></Form><Form method="post" className="inline-form">{hidden}<input type="hidden" name="intent" value="copy"/><label>Copier pour le<input type="date" name="date" defaultValue={m.date} required/></label><button className="secondary">Planifier une copie</button></Form><Form method="post" onSubmit={e=>{if(!confirm('Supprimer ce repas et ses lignes ?'))e.preventDefault();}}>{hidden}<button className="danger" name="intent" value="delete">Supprimer ce repas</button></Form></details>
+ </div><aside className="stack sticky"><section className="card" id="meal-nutrition"><Nutrition items={m.items} profile={profile} share={m.meal_type==='petit-dejeuner'?.25:m.meal_type==='collation'?.1:.35} compact={!detail}/><button className="text-button" onClick={()=>setDetail(!detail)}>{detail?'Réduire le détail':'Voir lipides, sucres, vitamines et minéraux →'}</button></section><div className="card soft"><h3>Prêt ?</h3><p>{m.status==='consumed'?'Ce repas est enregistré comme réalisé. Vous pouvez encore corriger ses portions.':'Validez le repas complet quand ses lignes vous conviennent.'}</p><Form method="post">{hidden}<button className="primary full" name="intent" value="status" >{m.status==='consumed'?'Conserver le repas réalisé':'Planifier ce repas'}</button><input type="hidden" name="status" value={m.status==='draft'?'planned':m.status}/></Form></div></aside></div>
+ </>}
+ </Shell>;
+}
+function ProposalReview({estimate,foods,mealId}:{estimate:any;foods:any[];mealId:string}){
+ const [rows,setRows]=useState<any[]>(estimate.proposals.map((p:any)=>({...p,include:true})));
+ return <div className="proposal"><p className="eyebrow">PROPOSITION · {estimate.method}</p><h3>Vérifiez avant d’ajouter</h3>{estimate.warning&&<Alert>{estimate.warning}</Alert>}{estimate.unmatched.length>0&&<p className="alert">À compléter manuellement : {estimate.unmatched.join(', ')}. <a href="/foods">Ajouter un aliment au catalogue</a></p>}
+ <Form method="post" className="stack"><input type="hidden" name="intent" value="confirm"/><input type="hidden" name="meal_id" value={mealId}/><input type="hidden" name="proposals" value={JSON.stringify(rows)}/>{rows.map((r,i)=><div key={i} className="proposal-row"><label className="check"><input type="checkbox" checked={r.include} onChange={e=>setRows(rows.map((x,j)=>j===i?{...x,include:e.target.checked}:x))}/>{r.description}</label><label>Aliment<select value={r.foodId} onChange={e=>setRows(rows.map((x,j)=>j===i?{...x,foodId:e.target.value}:x))}>{foods.map(f=><option key={f.id} value={f.id}>{f.name}</option>)}</select></label><label>Poids proposé (g)<input type="number" min="1" max="5000" value={r.grams} onChange={e=>setRows(rows.map((x,j)=>j===i?{...x,grams:Number(e.target.value)}:x))}/></label><small>Incertitude {r.confidence==='low'?'élevée':r.confidence==='medium'?'moyenne':'faible'} · reste une estimation</small></div>)}{rows.length>0&&<button className="primary">Ajouter les aliments sélectionnés au repas</button>}</Form></div>;
 }

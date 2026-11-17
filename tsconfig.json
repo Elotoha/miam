@@ -9,11 +9,12 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["@cloudflare/vite-plugin/client"],
+    "rootDirs": [".", "./.react-router/types"],
+    "types": ["vite/client"],
     "paths": {
       "~/*": ["./app/*"]
     }
   },
-  "include": ["app/**/*", "workers/**/*", ".react-router/types/**/*"],
+  "include": ["app/**/*", "workers/**/*", ".react-router/types/**/*", "worker-configuration.d.ts"],
   "exclude": ["node_modules"]
 }

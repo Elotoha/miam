@@ -11,7 +11,11 @@
     {
       "binding": "DB",
       "database_name": "miam-db",
-      "database_id": "YOUR_D1_DATABASE_ID"
+      "database_id": "e48bac93-5927-49e9-854d-8e8bb12240bf"
     }
-  ]
+  ],
+  "ai": {
+    "binding": "AI",
+    "remote": true
+  }
 }

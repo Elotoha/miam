@@ -1,117 +1,32 @@
-import { redirect } from "react-router";
-import type { Route } from "./+types/settings";
-import { getUserFromRequest } from "~/lib/auth";
-import { getUserById, updateUserTarget } from "~/lib/db";
-
-export async function loader({ context }: Route.LoaderArgs) {
-  const db = context.cloudflare.env.DB;
-  const user = await getUserFromRequest(db, new Request("http://localhost"));
-  if (!user) throw redirect("/login");
-
-  const userInfo = await getUserById(db, user.id);
-  return { email: userInfo?.email ?? user.email, target: userInfo?.daily_points_target ?? user.daily_points_target };
-}
-
-export async function action({ request, context }: Route.ActionArgs) {
-  const db = context.cloudflare.env.DB;
-  const user = await getUserFromRequest(db, request);
-  if (!user) throw redirect("/login");
-
-  const formData = await request.formData();
-  const target = parseInt(formData.get("daily_points_target") as string, 10);
-
-  if (!target || target < 10 || target > 100) {
-    return { error: "L'objectif doit être entre 10 et 100 points" };
-  }
-
-  await updateUserTarget(db, user.id, target);
-  return { success: true, target };
-}
-
-export default function Settings({ loaderData, actionData }: Route.ComponentProps) {
-  const currentTarget = actionData?.target ?? loaderData.target;
-
-  return (
-    <div className="min-h-screen bg-orange-50 pb-24">
-      <header className="bg-orange-500 text-white px-4 pt-3 pb-4" style={{ paddingTop: "calc(env(safe-area-inset-top) + 0.75rem)" }}>
-        <h1 className="text-xl font-bold">⚙️ Réglages</h1>
-      </header>
-
-      <div className="px-4 mt-4 space-y-4">
-        <div className="bg-white rounded-2xl shadow-sm p-4">
-          <h2 className="font-semibold text-gray-800 mb-1">Compte</h2>
-          <p className="text-sm text-gray-500">{loaderData.email}</p>
-        </div>
-
-        <div className="bg-white rounded-2xl shadow-sm p-4">
-          <h2 className="font-semibold text-gray-800 mb-3">Objectif de points quotidien</h2>
-          {actionData?.success && (
-            <p className="text-sm text-green-600 mb-2">Objectif mis à jour ! ✅</p>
-          )}
-          {actionData?.error && (
-            <p className="text-sm text-red-500 mb-2">{actionData.error}</p>
-          )}
-          <form method="post" className="space-y-3">
-            <input
-              type="number"
-              name="daily_points_target"
-              defaultValue={currentTarget}
-              min={10}
-              max={100}
-              className="w-full rounded-xl border border-gray-300 px-3 py-2.5 text-sm"
-            />
-            <button
-              type="submit"
-              className="w-full rounded-xl bg-orange-500 py-3 text-white font-medium hover:bg-orange-600 active:scale-95 transition"
-            >
-              Enregistrer
-            </button>
-          </form>
-        </div>
-
-        <div className="bg-white rounded-2xl shadow-sm p-4">
-          <h2 className="font-semibold text-gray-800 mb-2">À propos de Miam</h2>
-          <p className="text-sm text-gray-500">
-            Miam calcule les points Weight Watchers (SmartPoints) à partir des macros des aliments.
-            La formule est une approximation : (kcal + 4×protéines + 9×graisses saturées + 3×sucres - 4×fibres) / 33.
-          </p>
-        </div>
-
-        <form method="post" action="/logout" className="pt-4">
-          <button
-            type="submit"
-            className="w-full rounded-xl bg-red-50 border border-red-200 py-3 text-red-600 font-medium hover:bg-red-100 active:scale-95 transition"
-          >
-            Se déconnecter
-          </button>
-        </form>
-      </div>
-
-      {/* Bottom nav */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 bottom-nav">
-        <div className="flex justify-around items-center h-16 max-w-md mx-auto">
-          <a href="/dashboard" className="flex flex-col items-center text-gray-400">
-            <span className="text-xl">🏠</span>
-            <span className="text-[10px]">Accueil</span>
-          </a>
-          <a href="/log" className="flex flex-col items-center text-gray-400">
-            <span className="text-xl">➕</span>
-            <span className="text-[10px]">Saisir</span>
-          </a>
-          <a href="/foods" className="flex flex-col items-center text-gray-400">
-            <span className="text-xl">🍎</span>
-            <span className="text-[10px]">Aliments</span>
-          </a>
-          <a href="/plan" className="flex flex-col items-center text-gray-400">
-            <span className="text-xl">📅</span>
-            <span className="text-[10px]">Plan</span>
-          </a>
-          <a href="/settings" className="flex flex-col items-center text-orange-600">
-            <span className="text-xl">⚙️</span>
-            <span className="text-[10px]">Réglages</span>
-          </a>
-        </div>
-      </nav>
-    </div>
-  );
+import {Form,useLoaderData,useActionData} from 'react-router';
+import type {Route} from './+types/settings';
+import {session,profile,positive,validDate} from '~/lib/workspace';
+import {localDate,nutrients,number,type Profile} from '~/lib/nutrition';
+import {Shell,Alert} from '~/components/layout';
+export async function loader({request,context}:Route.LoaderArgs){const {db,user}=await session(request,context),history=await db.prepare('SELECT date,weight FROM weight_history WHERE user_id=? ORDER BY date DESC LIMIT 60').bind(user.id).all<{date:string;weight:number}>();return {profile:await profile(db,user.id),user,history:history.results};}
+export async function action({request,context}:Route.ActionArgs){const {db,user}=await session(request,context),f=await request.formData();try{
+ const optional=(key:string,max:number)=>String(f.get(key)||'')===''?null:positive(f.get(key),max);
+ const weight=optional('weight',500),height=optional('height',250),age=optional('age',120),target=optional('target_weight',500),date=String(f.get('target_date')||'');
+ if(age!==null&&(!Number.isInteger(age)||age<18))throw new Error('Les repères proposés ici sont destinés aux adultes de 18 ans ou plus.');
+ if(height!==null&&height<100)throw new Error('Vérifiez la taille en centimètres.');
+ if(date&&(!validDate(date)||date<=localDate()))throw new Error('L’échéance doit être une date future.');
+ const sex=String(f.get('sex')||'unspecified'),activity=Number(f.get('activity'));
+ if(!['male','female','unspecified'].includes(sex)||![1.2,1.4,1.6,1.8].includes(activity))throw new Error('Profil invalide.');
+ const targets:Profile['targets']={};
+ for(const [key] of nutrients){const min=f.get(key+'_min'),max=f.get(key+'_max');if(min!==null&&min!==''||max!==null&&max!==''){
+  const range:{min?:number;max?:number}={};if(min!==null&&min!==''){const n=Number(min);if(!Number.isFinite(n)||n<0||n>100000)throw new Error('Repère invalide.');range.min=n;}
+  if(max!==null&&max!==''){const n=Number(max);if(!Number.isFinite(n)||n<0||n>100000)throw new Error('Repère invalide.');range.max=n;}
+  if(range.min!==undefined&&range.max!==undefined&&range.min>range.max)throw new Error('Un minimum ne peut pas dépasser son maximum.');targets[key]=range;
+ }}
+ const intolerances=f.getAll('intolerances').map(String).filter(s=>['gluten','lactose'].includes(s)),ww=positive(f.get('daily_points_target'),100);if(ww<10)throw new Error('L’objectif de points doit être entre 10 et 100.');
+ const statements=[db.prepare(`INSERT INTO profiles(user_id,weight,height,sex,age,target_weight,target_date,activity,intolerances,targets_json) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET weight=excluded.weight,height=excluded.height,sex=excluded.sex,age=excluded.age,target_weight=excluded.target_weight,target_date=excluded.target_date,activity=excluded.activity,intolerances=excluded.intolerances,targets_json=excluded.targets_json`).bind(user.id,weight,height,sex,age,target,date||null,activity,JSON.stringify(intolerances),JSON.stringify(targets)),db.prepare('UPDATE users SET daily_points_target=? WHERE id=?').bind(ww,user.id)];
+ if(weight)statements.push(db.prepare('INSERT INTO weight_history(id,user_id,date,weight) VALUES(?,?,?,?) ON CONFLICT(user_id,date) DO UPDATE SET weight=excluded.weight').bind(crypto.randomUUID(),user.id,localDate(),weight));
+ await db.batch(statements);return {success:true,error:null};
+ }catch(e){return {error:e instanceof Error?e.message:'Profil non enregistré.',success:false};}}
+export default function Settings(){const d=useLoaderData<typeof loader>(),p=d.profile,result=useActionData<typeof action>();const weeks=p.target_date?Math.max(0,(Date.parse(p.target_date)-Date.now())/(7*864e5)):0,pace=p.weight&&p.target_weight&&weeks?(p.weight-p.target_weight)/weeks:null;
+ return <Shell title="Vos repères, votre rythme" subtitle="Le profil et les préférences ne sont visibles que sur votre compte.">{result?.error&&<Alert>{result.error}</Alert>}{result?.success&&<p className="success" role="status">Votre profil est enregistré.</p>}
+ <Form method="post" className="stack"><div className="profile-grid"><section className="card stack"><p className="eyebrow">MIEUX VOUS CONNAÎTRE</p><h2>Mon profil</h2><p className="fine">{d.user.email} · Les champs corporels sont facultatifs. Ils servent uniquement à des estimations pour adultes.</p><div className="two-cols"><label>Poids actuel (kg)<input type="number" name="weight" step="0.1" min="1" max="500" defaultValue={p.weight??''}/></label><label>Taille (cm)<input type="number" name="height" step="0.1" min="100" max="250" defaultValue={p.height??''}/></label><label>Âge (ans)<input type="number" name="age" min="18" max="120" defaultValue={p.age??''}/></label><label>Sexe (pour l’estimation énergétique)<select name="sex" defaultValue={p.sex||'unspecified'}><option value="unspecified">Ne pas préciser</option><option value="female">Féminin</option><option value="male">Masculin</option></select></label></div><label>Activité habituelle<select name="activity" defaultValue={p.activity}><option value="1.2">Peu active</option><option value="1.4">Légère</option><option value="1.6">Modérée</option><option value="1.8">Soutenue</option></select></label><p className="fine">L’énergie affichée est une estimation de maintien (Mifflin–St Jeor × activité), sans restriction automatique. Vos cibles professionnelles saisies ci-dessous sont prioritaires.</p></section>
+ <section className="card stack"><p className="eyebrow">VOTRE DIRECTION</p><h2>Mon objectif</h2><label>Poids cible (kg)<input type="number" name="target_weight" step="0.1" min="1" max="500" defaultValue={p.target_weight??''}/></label><label>Échéance souhaitée<input type="date" name="target_date" defaultValue={p.target_date||''}/></label><label>Objectif quotidien de points WW (approximation)<input type="number" name="daily_points_target" min="10" max="100" defaultValue={d.user.daily_points_target} required/></label>{pace!==null&&<div className="soft card"><strong>Rythme demandé : {number(Math.abs(pace),2)} kg / semaine de {pace>0?'perte':'prise'}.</strong><p className="fine">C’est une projection arithmétique, pas une recommandation ni une promesse de résultat. {Math.abs(pace)>1?'Cette échéance demande un rythme élevé ; discutez d’un calendrier plus progressif avec votre diététicienne.':'Votre diététicienne peut vous aider à choisir un rythme adapté.'}</p></div>}<h3>Points de vigilance</h3>{['gluten','lactose'].map(k=><label className="check" key={k}><input type="checkbox" name="intolerances" value={k} defaultChecked={p.intolerances.includes(k)}/>Surveiller le {k}</label>)}<p className="fine">Ces alertes ne garantissent pas l’absence d’allergènes ou de traces. Consultez les étiquettes ; ne déduisez pas une quantité de gluten à partir du nom d’un aliment.</p></section></div>
+ <details className="card"><summary>Mes cibles nutritionnelles personnalisées</summary><p>Repères par jour, fournis par votre professionnel. Laissez vide pour utiliser les repères généraux disponibles. Un plafond peut être renseigné sans minimum, notamment pour les AG saturés ou le sodium.</p><div className="nutrient-fields">{nutrients.map(([key,label,unit])=><div key={key} className="target-field"><strong>{label} ({unit}/jour)</strong><div className="two-cols"><label>Minimum<input type="number" step="any" min="0" max="100000" name={key+'_min'} defaultValue={p.targets[key]?.min??''}/></label><label>Maximum<input type="number" step="any" min="0" max="100000" name={key+'_max'} defaultValue={p.targets[key]?.max??''}/></label></div></div>)}</div></details><button className="primary save-profile">Enregistrer mon profil</button></Form>
+ <section className="card history"><h2>Évolution du poids</h2>{d.history.length?<><div className="weight-chart" aria-label="Derniers poids enregistrés">{d.history.slice(0,14).reverse().map(h=><div key={h.date}><span style={{height:Math.max(15,80+(h.weight-(p.weight||h.weight))*5)+'px'}}/><strong>{number(h.weight)}</strong><small>{h.date.slice(5).split('-').reverse().join('/')}</small></div>)}</div><details><summary>Historique détaillé</summary>{d.history.map(h=><p key={h.date}>{h.date} · {number(h.weight)} kg</p>)}</details></>:<p>Renseignez votre poids pour démarrer un suivi. Une mesure par jour est conservée.</p>}</section><Form method="post" action="/logout"><button className="secondary">Se déconnecter</button></Form></Shell>;
 }

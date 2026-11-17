@@ -1,166 +1,36 @@
-import { redirect } from "react-router";
-import type { Route } from "./+types/plan";
-import { getUserFromRequest } from "~/lib/auth";
-import { getMealPlansForDate, addMealPlan, deleteMealPlan, getAllFoods } from "~/lib/db";
-
-export async function loader({ context }: Route.LoaderArgs) {
-  const db = context.cloudflare.env.DB;
-  const user = await getUserFromRequest(db, new Request("http://localhost"));
-  if (!user) throw redirect("/login");
-
-  const today = new Date().toISOString().split("T")[0];
-  const [plans, foods] = await Promise.all([
-    getMealPlansForDate(db, user.id, today),
-    getAllFoods(db),
-  ]);
-
-  return { plans, foods, today };
-}
-
-export async function action({ request, context }: Route.ActionArgs) {
-  const db = context.cloudflare.env.DB;
-  const user = await getUserFromRequest(db, request);
-  if (!user) throw redirect("/login");
-
-  const formData = await request.formData();
-  const intent = formData.get("intent") as string;
-  const today = new Date().toISOString().split("T")[0];
-
-  if (intent === "add") {
-    const foodId = parseInt(formData.get("food_id") as string, 10);
-    const mealType = formData.get("meal_type") as string;
-    const qtyG = parseInt(formData.get("planned_qty_g") as string, 10) || 250;
-
-    await addMealPlan(db, user.id, {
-      date: today,
-      meal_type: mealType,
-      food_id: foodId,
-      planned_qty_g: qtyG,
-    });
-  } else if (intent === "delete") {
-    const planId = parseInt(formData.get("plan_id") as string, 10);
-    await deleteMealPlan(db, planId, user.id);
-  }
-
-  return { ok: true };
-}
-
-export default function Plan({ loaderData }: Route.ComponentProps) {
-  const { plans, foods, today } = loaderData;
-
-  const mealTypeLabels: Record<string, string> = {
-    "petit-dejeuner": "Petit-déjeuner",
-    "collation-matin": "Collation matin",
-    "dejeuner": "Déjeuner",
-    "collation-aprem": "Collation après-midi",
-    "diner": "Dîner",
-  };
-
-  return (
-    <div className="min-h-screen bg-orange-50 pb-24">
-      <header className="bg-orange-500 text-white px-4 pt-3 pb-4" style={{ paddingTop: "calc(env(safe-area-inset-top) + 0.75rem)" }}>
-        <h1 className="text-xl font-bold">📅 Plan des repas</h1>
-        <p className="text-sm text-orange-100 mt-1">
-          {new Date(today).toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" })}
-        </p>
-      </header>
-
-      <div className="px-4 mt-4 space-y-4">
-        {/* Add a planned meal */}
-        <div className="bg-white rounded-2xl shadow-sm p-4">
-          <h2 className="font-semibold text-gray-800 mb-3">+ Programmer un repas</h2>
-          <form method="post" className="space-y-3">
-            <input type="hidden" name="intent" value="add" />
-            <select name="meal_type" className="w-full rounded-xl border border-gray-300 px-3 py-2.5 text-sm">
-              <option value="petit-dejeuner">Petit-déjeuner</option>
-              <option value="collation-matin">Collation matin</option>
-              <option value="dejeuner" selected>Déjeuner</option>
-              <option value="collation-aprem">Collation après-midi</option>
-              <option value="diner">Dîner</option>
-            </select>
-            <select name="food_id" className="w-full rounded-xl border border-gray-300 px-3 py-2.5 text-sm">
-              {foods.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.name} ({f.category})
-                </option>
-              ))}
-            </select>
-            <input
-              type="number"
-              name="planned_qty_g"
-              defaultValue={250}
-              min={10}
-              className="w-full rounded-xl border border-gray-300 px-3 py-2.5 text-sm"
-              placeholder="Quantité en grammes"
-            />
-            <button
-              type="submit"
-              className="w-full rounded-xl bg-orange-500 py-3 text-white font-medium hover:bg-orange-600 active:scale-95 transition"
-            >
-              Programmer
-            </button>
-          </form>
-        </div>
-
-        {/* Planned meals */}
-        <div>
-          <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">
-            Repas programmés
-          </h2>
-          {plans.length === 0 ? (
-            <p className="text-center py-8 text-gray-400">Aucun repas programmé pour aujourd'hui.</p>
-          ) : (
-            <div className="space-y-2">
-              {plans.map((plan) => (
-                <div key={plan.id} className="bg-white rounded-xl p-3 shadow-sm flex items-center justify-between">
-                  <div>
-                    <p className="font-medium text-gray-800">{plan.food_name}</p>
-                    <p className="text-xs text-gray-400">
-                      {mealTypeLabels[plan.meal_type] || plan.meal_type} · {plan.planned_qty_g}g · ~{plan.estimated_ww_points} pts
-                    </p>
-                  </div>
-                  <form method="post" className="inline">
-                    <input type="hidden" name="intent" value="delete" />
-                    <input type="hidden" name="plan_id" value={plan.id} />
-                    <button
-                      type="submit"
-                      className="text-red-400 hover:text-red-600 text-sm px-2 py-1"
-                    >
-                      ✕
-                    </button>
-                  </form>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Bottom nav */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 bottom-nav">
-        <div className="flex justify-around items-center h-16 max-w-md mx-auto">
-          <a href="/dashboard" className="flex flex-col items-center text-gray-400">
-            <span className="text-xl">🏠</span>
-            <span className="text-[10px]">Accueil</span>
-          </a>
-          <a href="/log" className="flex flex-col items-center text-gray-400">
-            <span className="text-xl">➕</span>
-            <span className="text-[10px]">Saisir</span>
-          </a>
-          <a href="/foods" className="flex flex-col items-center text-gray-400">
-            <span className="text-xl">🍎</span>
-            <span className="text-[10px]">Aliments</span>
-          </a>
-          <a href="/plan" className="flex flex-col items-center text-orange-600">
-            <span className="text-xl">📅</span>
-            <span className="text-[10px]">Plan</span>
-          </a>
-          <a href="/settings" className="flex flex-col items-center text-gray-400">
-            <span className="text-xl">⚙️</span>
-            <span className="text-[10px]">Réglages</span>
-          </a>
-        </div>
-      </nav>
-    </div>
-  );
-}
+import {Form,useActionData,useLoaderData,redirect} from 'react-router';
+import {useState} from 'react';
+import type {Route} from './+types/plan';
+import {session,catalog,profile,meals,parse,itemStatement,positive,validDate,type Food} from '~/lib/workspace';
+import {suggest,type Rule,type Program} from '~/lib/program';
+import {mealTypes,localDate,type Item} from '~/lib/nutrition';
+import {Shell,Alert} from '~/components/layout';
+import {Nutrition,MealLines,Advice} from '~/components/nutrition';
+export async function loader({request,context}:Route.LoaderArgs){const {db,user}=await session(request,context);const {results}=await db.prepare('SELECT * FROM meal_programs WHERE user_id=?').bind(user.id).all<any>();return {foods:await catalog(db,user.id),profile:await profile(db,user.id),programs:results.map(p=>({...p,tree:parse(p.tree_json,null)})) as Program[],date:new URL(request.url).searchParams.get('date')||localDate(),type:new URL(request.url).searchParams.get('meal_type')||'dejeuner'};}
+function allowed(foods:Food[],intolerances:string[]){return foods.filter(f=>f.affinity!==0&&!intolerances.some(k=>(k==='gluten'||k==='lactose')&&(f[k]==='present'||f[k]==='traces'))).sort((a,b)=>(b.affinity??2.5)-(a.affinity??2.5));}
+export async function action({request,context}:Route.ActionArgs){const {db,user}=await session(request,context),f=await request.formData();try{
+ const date=String(f.get('date')),type=String(f.get('meal_type'));if(!validDate(date)||!['petit-dejeuner','dejeuner','diner'].includes(type))throw new Error('Date ou repas invalide.');
+ const foods=await catalog(db,user.id),p=await profile(db,user.id);
+ if(f.get('intent')==='save'){
+  const rows=parse<any>(String(f.get('rows')),null);if(!Array.isArray(rows)||!rows.length||rows.length>30)throw new Error('Proposition invalide.');
+  const id=crypto.randomUUID(),statements=[db.prepare('INSERT INTO meals(id,user_id,date,meal_type,status,title) VALUES(?,?,?,?,?,?)').bind(id,user.id,date,type,'planned',mealTypes[type])];
+  for(const r of rows){const food=foods.find(food=>food.id===r.foodId);if(!food)throw new Error('Un aliment n’est plus disponible.');statements.push(itemStatement(db,id,food,positive(r.grams,5000)));}
+  await db.batch(statements);return redirect('/log?meal='+id);
+ }
+ const candidates=allowed(foods,p.intolerances),offset=Math.abs(Number(f.get('variant'))||0)%100;
+ let choices:{food:Food;grams:number}[]=[];
+ let reason='Composition libre : aliments disponibles, affinités les mieux notées et variété des familles.';
+ if(f.get('mode')==='program'){
+  const program=await db.prepare('SELECT tree_json FROM meal_programs WHERE user_id=? AND meal_type=?').bind(user.id,type).first<{tree_json:string}>();
+  if(!p.program_enabled||!program)throw new Error('Activez et renseignez les options de ce repas dans Programme, ou choisissez une composition libre.');
+  choices=suggest(parse<Rule>(program.tree_json,{id:"empty",kind:"all",children:[]}),candidates,offset);
+  reason='Options de votre programme, choisies selon vos affinités. Les aliments notés 0/5 et les intolérances déclarées présents sont écartés. Vérifiez les quantités et les informations inconnues.';
+ }else{
+  const pick=(categories:string[],grams?:number)=>{const group=candidates.filter(f=>categories.includes(f.category.toLowerCase()));if(group.length){const food=group[offset%Math.min(4,group.length)];choices.push({food,grams:grams||food.portion});}};
+  if(type==='petit-dejeuner'){pick(['produits_laitiers','produits laitiers'],100);pick(['feculents'],40);pick(['fruits'],160);}else{pick(['legumes'],200);pick(['proteines'],140);pick(['feculents'],150);pick(['fruits'],160);}
+ }
+ if(!choices.length)throw new Error('Aucune combinaison disponible. Ajoutez des aliments ou ajustez vos préférences.');
+ const dayItems=(await meals(db,user.id,date)).filter(m=>m.status==='consumed').flatMap(m=>m.items);
+ return {error:null,proposal:{date,type,reason,dayItems,variant:offset+1,items:choices.map(({food,grams},i)=>({id:'preview-'+i,food_id:food.id,name:food.name,grams,nutrients:food.nutrients,source:food.source,gluten:food.gluten,lactose:food.lactose,estimated:0,note:''}) as Item)}};
+ }catch(e){return {error:e instanceof Error?e.message:'Proposition indisponible.',proposal:null};}}
+export default function Plan(){const d=useLoaderData<typeof loader>(),result=useActionData<typeof action>(),[expanded,setExpanded]=useState(false),proposal=result?.proposal;return <Shell title="Un peu d’avance, beaucoup de liberté" subtitle="Explorez une idée, comparez ses apports, puis gardez-la ou ajustez-la."><div className="workspace-grid"><div className="stack"><section className="card"><p className="eyebrow">ASSISTANT DE PLANIFICATION</p><h2>Quel repas prépare-t-on ?</h2>{result?.error&&<Alert>{result.error}</Alert>}<Form method="post" className="stack"><input type="hidden" name="intent" value="propose"/><input type="hidden" name="variant" value={proposal?.variant||0}/><div className="two-cols"><label>Date<input type="date" name="date" defaultValue={d.date} required/></label><label>Repas<select name="meal_type" defaultValue={d.type}>{Object.entries(mealTypes).slice(0,3).map(([k,l])=><option key={k} value={k}>{l}</option>)}</select></label></div><label>Votre point de départ<select name="mode" defaultValue={d.profile.program_enabled?'program':'free'}><option value="free">Composition libre, même hors programme</option><option value="program">Respecter mes options de diététicienne</option></select></label><button className="primary">{proposal?'Explorer une autre idée ✧':'Me proposer un repas ✧'}</button></Form><p className="fine">Aucune prévision n’est enregistrée avant votre confirmation. L’assistant privilégie vos goûts ; il ne prescrit pas de régime.</p></section>{proposal&&<><section className="card"><p className="eyebrow">PROPOSITION À AJUSTER</p><h2>{mealTypes[proposal.type]}</h2><p>{proposal.reason}</p><MealLines items={proposal.items} profile={d.profile}/><Form method="post" className="stack"><input type="hidden" name="intent" value="save"/><input type="hidden" name="date" value={proposal.date}/><input type="hidden" name="meal_type" value={proposal.type}/><input type="hidden" name="rows" value={JSON.stringify(proposal.items.map(i=>({foodId:i.food_id,grams:i.grams})))}/><button className="primary">Garder et personnaliser ce repas →</button></Form></section><Advice items={proposal.items} profile={d.profile}/>{proposal.dayItems.length>0&&<section className="card soft"><h3>Avec ce que vous avez déjà mangé</h3><p className="fine">Projection de la journée : réalisé + cette proposition. Les autres prévisions ne sont pas comptées ici.</p><Nutrition items={[...proposal.dayItems,...proposal.items]} profile={d.profile} compact/><Advice items={[...proposal.dayItems,...proposal.items]} profile={d.profile}/></section>}</>}</div><aside className="stack">{proposal?<section className="card"><Nutrition items={proposal.items} profile={d.profile} share={proposal.type==='petit-dejeuner'?.25:.35} compact={!expanded}/><button className="text-button" onClick={()=>setExpanded(!expanded)}>Afficher {expanded?'moins de détails':'tous les nutriments'}</button></section>:<div className="inspiration"><span>✧</span><h2>Prévoir n’est pas s’obliger.</h2><p>Un repas planifié reste modifiable. Le même bilan vous accompagne pendant sa composition et une fois mangé.</p><a href="/program">Mes options autorisées →</a></div>}</aside></div></Shell>}

@@ -9,5 +9,7 @@ export default [
   route("log", "routes/log.tsx"),
   route("plan", "routes/plan.tsx"),
   route("settings", "routes/settings.tsx"),
+  route("program", "routes/program.tsx"),
+  route("guide", "routes/guide.tsx"),
   route("logout", "routes/logout.tsx"),
 ] satisfies RouteConfig;

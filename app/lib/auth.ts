@@ -90,7 +90,7 @@ export async function getUserFromRequest(
       `SELECT u.id, u.email, u.daily_points_target
        FROM sessions s
        JOIN users u ON s.user_id = u.id
-       WHERE s.token = ? AND s.expires_at > datetime('now')
+       WHERE s.token = ? AND julianday(s.expires_at) > julianday('now')
        LIMIT 1`,
     )
     .bind(token)
@@ -99,8 +99,8 @@ export async function getUserFromRequest(
   return result ?? null;
 }
 
-export function createSessionCookie(token: string): string {
-  return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`;
+export function createSessionCookie(token: string, secure = false): string {
+  return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000${secure ? "; Secure" : ""}`;
 }
 
 export function clearSessionCookie(): string {

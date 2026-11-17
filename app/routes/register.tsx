@@ -1,15 +1,16 @@
-import { redirect } from "react-router";
+import { cloudflareContext } from "~/lib/context";
+import { redirect, Form } from "react-router";
 import type { Route } from "./+types/register";
 import { hashPassword, createSession, createSessionCookie, getUserFromRequest } from "~/lib/auth";
 
-export async function loader({ context }: Route.LoaderArgs) {
-  const user = await getUserFromRequest(context.cloudflare.env.DB, new Request("http://localhost"));
+export async function loader({ request, context }: Route.LoaderArgs) {
+  const user = await getUserFromRequest(context.get(cloudflareContext).env.DB, request);
   if (user) throw redirect("/dashboard");
   return {};
 }
 
 export async function action({ request, context }: Route.ActionArgs) {
-  const db = context.cloudflare.env.DB;
+  const db = context.get(cloudflareContext).env.DB;
   const formData = await request.formData();
   const email = (formData.get("email") as string)?.toLowerCase();
   const password = formData.get("password") as string;
@@ -21,7 +22,7 @@ export async function action({ request, context }: Route.ActionArgs) {
   if (password.length < 6) {
     return { error: "Le mot de passe doit faire au moins 6 caractères" };
   }
-  if (!target || target < 10) {
+  if (!target || target < 10 || target > 100) {
     return { error: "Objectif de points invalide" };
   }
 
@@ -42,76 +43,11 @@ export async function action({ request, context }: Route.ActionArgs) {
     status: 302,
     headers: {
       Location: "/dashboard",
-      "Set-Cookie": createSessionCookie(token),
+      "Set-Cookie": createSessionCookie(token, new URL(request.url).protocol === "https:"),
     },
   });
 }
 
-export default function Register() {
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-orange-50 p-6">
-      <div className="w-full max-w-sm">
-        <div className="text-center mb-8">
-          <div className="text-5xl mb-2">🍽️</div>
-          <h1 className="text-3xl font-bold text-orange-600">Créer un compte</h1>
-          <p className="text-gray-500 mt-1">Rejoignez Miam</p>
-        </div>
-
-        <form method="post" className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-            <input
-              type="email"
-              name="email"
-              required
-              className="w-full rounded-xl border border-gray-300 px-4 py-3 focus:border-orange-500 focus:ring-2 focus:ring-orange-200 outline-none"
-              placeholder="vous@exemple.fr"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Mot de passe</label>
-            <input
-              type="password"
-              name="password"
-              required
-              minLength={6}
-              className="w-full rounded-xl border border-gray-300 px-4 py-3 focus:border-orange-500 focus:ring-2 focus:ring-orange-200 outline-none"
-              placeholder="Minimum 6 caractères"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Objectif de points par jour
-            </label>
-            <input
-              type="number"
-              name="daily_points_target"
-              required
-              defaultValue={23}
-              min={10}
-              max={100}
-              className="w-full rounded-xl border border-gray-300 px-4 py-3 focus:border-orange-500 focus:ring-2 focus:ring-orange-200 outline-none"
-            />
-            <p className="text-xs text-gray-400 mt-1">
-              Par défaut 23 points (ajustable plus tard)
-            </p>
-          </div>
-
-          <button
-            type="submit"
-            className="w-full rounded-xl bg-orange-500 py-3.5 text-white font-semibold hover:bg-orange-600 active:scale-95 transition"
-          >
-            Créer mon compte
-          </button>
-        </form>
-
-        <p className="text-center text-sm text-gray-500 mt-6">
-          Déjà un compte ?{" "}
-          <a href="/login" className="text-orange-600 font-medium">
-            Se connecter
-          </a>
-        </p>
-      </div>
-    </div>
-  );
+export default function Register({ actionData }: Route.ComponentProps) {
+ return <main className="auth-page"><section className="auth-card"><a className="brand" href="/">miam<span>·</span></a><p className="eyebrow">VOTRE CARNET PERSONNEL</p><h1>Une place à votre table.</h1><p className="subtitle">Un compte par personne : les goûts et les objectifs restent les vôtres.</p><Form method="post" className="stack">{actionData?.error&&<p className="alert" role="alert">{actionData.error}</p>}<label>Email<input type="email" name="email" autoComplete="email" required/></label><label>Mot de passe (6 caractères minimum)<input type="password" name="password" autoComplete="new-password" minLength={6} required/></label><label>Repère quotidien WW (approximatif)<input type="number" name="daily_points_target" min={10} max={100} defaultValue={23} required/></label><button className="primary">Créer mon compte</button></Form><p className="fine">Déjà inscrit ? <a href="/login">Se connecter →</a></p></section></main>;
 }

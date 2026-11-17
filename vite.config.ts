@@ -4,8 +4,9 @@ import { reactRouter } from "@react-router/dev/vite";
 import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
+  resolve: { alias: { "~": new URL("./app", import.meta.url).pathname } },
   plugins: [
-    cloudflare({ viteEnvironment: { name: "ssr" } }),
+    cloudflare({ configPath: process.env.MIAM_WRANGLER_CONFIG, viteEnvironment: { name: "ssr" } }),
     reactRouter(),
     tailwindcss(),
   ],
